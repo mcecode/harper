@@ -12,17 +12,11 @@ import { commands, window } from 'vscode';
 import { LanguageClient, TransportKind } from 'vscode-languageclient/node';
 import yauzl from 'yauzl';
 
-// TODO: Put this in a `harperContext` object along with other reusable structures and data, like:
-// `binDir`
-// Extension version
-// Output channel
 let client: LanguageClient | null = null;
 
-const serverOptions: Executable = {
-	// TODO: Pass the path of the downloaded `harper-ls` here
-	command: 'harper-ls',
-	transport: TransportKind.stdio
-};
+// TODO: Add `client`, extension version, output channel
+const harperContext = { binDir: '' };
+const serverOptions: Executable = { command: '', transport: TransportKind.stdio };
 const clientOptions: LanguageClientOptions = {
 	documentSelector: [
 		{ language: 'html' },
@@ -48,19 +42,27 @@ const clientOptions: LanguageClientOptions = {
 };
 
 export async function activate(context: ExtensionContext): Promise<void> {
+	harperContext.binDir = path.join(context.extensionPath, 'bin');
+	serverOptions.command = path.join(
+		harperContext.binDir,
+		`harper-ls${process.platform === 'win32' ? '.exe' : ''}`
+	);
+
+	context.subscriptions.push(commands.registerCommand('harper-ls.restart', startLanguageServer));
+
 	if (!(await pathExists(path.join(context.extensionPath, 'bin')))) {
 		try {
-			await downloadLatestHarperLs(context);
+			// TODO: Open Harper output and log the download progress to the user
+			await downloadLatestHarperLs();
 		} catch (error) {
 			// TODO: Inform the user of the error
 		}
 	}
 
-	context.subscriptions.push(commands.registerCommand('harper-ls.restart', startLanguageServer));
 	startLanguageServer();
 }
 
-async function downloadLatestHarperLs(context: ExtensionContext) {
+async function downloadLatestHarperLs() {
 	let arch = null;
 	switch (process.arch) {
 		case 'arm':
@@ -98,7 +100,7 @@ async function downloadLatestHarperLs(context: ExtensionContext) {
 		throw new Error(`Unsupported platform '${process.platform}'. Supported: ${sup.join(', ')}`);
 	}
 
-	let assets;
+	let assets, version;
 	try {
 		const res = await fetch('https://api.github.com/repos/elijah-potter/harper/releases/latest', {
 			redirect: 'follow',
@@ -108,7 +110,7 @@ async function downloadLatestHarperLs(context: ExtensionContext) {
 				'X-GitHub-Api-Version': '2022-11-28'
 			}
 		});
-		({ assets } =
+		({ assets, tag_name: version } =
 			(await res.json()) as paths['/repos/{owner}/{repo}/releases/latest']['get']['responses']['200']['content']['application/json']);
 	} catch {
 		throw new Error('Failed to get info on latest harper-ls version');
@@ -123,16 +125,15 @@ async function downloadLatestHarperLs(context: ExtensionContext) {
 		);
 	}
 
-	const binDir = path.join(context.extensionPath, 'bin');
-	if (!(await pathExists(binDir))) {
+	if (!(await pathExists(harperContext.binDir))) {
 		try {
-			await fs.mkdir(binDir, { recursive: true });
+			await fs.mkdir(harperContext.binDir, { recursive: true });
 		} catch {
 			throw new Error('Failed to create bin directory');
 		}
 	}
 
-	const archiveFile = path.join(binDir, assetName);
+	const archiveFile = path.join(harperContext.binDir, assetName);
 	try {
 		await fs.writeFile(
 			archiveFile,
@@ -142,13 +143,37 @@ async function downloadLatestHarperLs(context: ExtensionContext) {
 		throw new Error('Failed to download harper-ls archive');
 	}
 
+	const currentHarperLs = path.join(
+		harperContext.binDir,
+		`harper-ls${process.platform === 'win32' ? '.exe' : ''}`
+	);
+	const oldHarperLs = currentHarperLs + '.old';
+	if (await pathExists(currentHarperLs)) {
+		try {
+			await fs.rename(currentHarperLs, oldHarperLs);
+			await updateMetadata({ oldVersion: (await getMetadata()).currentVersion });
+		} catch {
+			throw new Error('Failed to backup old harper-ls version');
+		}
+	}
+
 	try {
-		await unzip({ type: asset.content_type, archive: archiveFile, outDir: binDir });
-	} catch (error) {
+		await unzip({ type: asset.content_type, archive: archiveFile, outDir: harperContext.binDir });
+	} catch {
 		throw new Error('Failed to extract harper-ls from archive');
 	}
 
-	// TODO: Cleanup archive file and note in a file current `harper-ls` version
+	try {
+		await updateMetadata({ currentVersion: version });
+	} catch {
+		throw new Error('Failed to update metadata');
+	}
+
+	try {
+		await fs.rm(archiveFile);
+	} catch {
+		throw new Error('Failed to delete harper-ls archive');
+	}
 }
 
 async function startLanguageServer(): Promise<void> {
@@ -171,6 +196,32 @@ async function startLanguageServer(): Promise<void> {
 	} catch (error) {
 		// TODO: Inform the user of the error
 		client = null;
+	}
+}
+
+type Metadata = { oldVersion?: string; currentVersion?: string };
+const metadataFile = path.join(harperContext.binDir, 'metadata.json');
+async function getMetadata(): Promise<Metadata> {
+	try {
+		return JSON.parse(await fs.readFile(metadataFile, 'utf-8'));
+	} catch {
+		throw new Error('Failed to read metadata.json');
+	}
+}
+async function updateMetadata(newData: Metadata): Promise<void> {
+	let metadata;
+	if (await pathExists(metadataFile)) {
+		try {
+			metadata = JSON.parse(await fs.readFile(metadataFile, 'utf-8'));
+		} catch {
+			throw new Error('Failed to read metadata.json');
+		}
+	}
+
+	try {
+		await fs.writeFile(metadataFile, JSON.stringify(Object.assign(metadata, newData), null, 2));
+	} catch {
+		throw new Error('Failed to write metadata.json');
 	}
 }
 

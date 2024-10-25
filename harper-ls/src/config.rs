@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use dirs::{config_dir, data_local_dir};
+use globset::{Glob, GlobSet};
 use harper_core::{Dialect, linting::LintGroupConfig, parsers::MarkdownOptions};
 use resolve_path::PathResolveExt;
 use serde::{Deserialize, Serialize};
@@ -77,6 +78,7 @@ pub struct Config {
     /// Maximum length (in bytes) a file can have before it's skipped.
     /// Above this limit, the file will not be linted.
     pub max_file_length: usize,
+    pub exclude_patterns: GlobSet,
 }
 
 impl Config {
@@ -182,6 +184,23 @@ impl Config {
             }
         }
 
+        if let Some(v) = value.get("excludePatterns") {
+            let Some(a) = v.as_array() else {
+                bail!("excludePatterns must be an array.");
+            };
+
+            let patterns: Vec<Value> = a.to_vec();
+            if !patterns.is_empty() {
+                let mut builder = GlobSet::builder();
+
+                for pattern in patterns {
+                    builder.add(Glob::new(pattern.as_str().unwrap())?);
+                }
+
+                base.exclude_patterns = builder.build()?;
+            }
+        }
+
         Ok(base)
     }
 }
@@ -203,6 +222,7 @@ impl Default for Config {
             markdown_options: MarkdownOptions::default(),
             dialect: Dialect::American,
             max_file_length: 120_000,
+            exclude_patterns: GlobSet::empty(),
         }
     }
 }

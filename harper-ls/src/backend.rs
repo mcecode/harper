@@ -237,7 +237,14 @@ impl Backend {
         self.pull_config().await;
 
         // Copy necessary configuration to avoid holding lock.
-        let (lint_config, markdown_options, isolate_english, dialect, max_file_length) = {
+        let (
+            lint_config,
+            markdown_options,
+            isolate_english,
+            dialect,
+            max_file_length,
+            exclude_patterns,
+        ) = {
             let config = self.config.read().await;
             (
                 config.lint_config.clone(),
@@ -245,17 +252,29 @@ impl Backend {
                 config.isolate_english,
                 config.dialect,
                 config.max_file_length,
+                config.exclude_patterns.clone(),
             )
         };
+
+        let mut doc_lock = self.doc_state.lock().await;
+
+        if !exclude_patterns.is_empty()
+            && exclude_patterns.is_match(
+                uri.to_file_path()
+                    .ok_or_else(|| anyhow!("Unable to convert URI to file path."))?,
+            )
+        {
+            doc_lock.remove(uri);
+            return Ok(());
+        }
+
+        let ignored_lints = self.load_ignored_lints(uri).await.unwrap_or_default();
 
         let dict = Arc::new(
             self.generate_file_dictionary(uri)
                 .await
                 .context("Unable to generate the file dictionary.")?,
         );
-
-        let mut doc_lock = self.doc_state.lock().await;
-        let ignored_lints = self.load_ignored_lints(uri).await.unwrap_or_default();
 
         let doc_state = doc_lock.entry(uri.clone()).or_insert_with(|| {
             info!("Constructing new LintGroup for new document.");
@@ -400,6 +419,21 @@ impl Backend {
         let Some(doc_state) = doc_states.get_mut(uri) else {
             return Ok(Vec::new());
         };
+
+        // warn!("FROM GENERATE CODE ACTIONS");
+        // warn!("{}", fileify_path(uri).unwrap().display());
+        // warn!(
+        //     "{}",
+        //     config.exclude_patterns.is_match(fileify_path(uri).unwrap())
+        // );
+        // warn!("------------------------------------------------------");
+
+        // if !config.exclude_patterns.is_empty()
+        //     && config.exclude_patterns.is_match(fileify_path(uri).unwrap())
+        // {
+        //     doc_states.remove(uri);
+        //     return Ok(Vec::new());
+        // }
 
         Ok(doc_state.generate_code_actions(range, &config.code_action_config))
     }

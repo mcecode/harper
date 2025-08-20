@@ -1,0 +1,28 @@
+name: Build Debug
+
+on:
+  push:
+    branches: ["build-debug-harper-ls"]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu
+      - name: Build
+        run: cargo +stable build --locked --profile dev --bin harper-ls --target x86_64-unknown-linux-gnu
+      - name: Archive
+        run: |
+          cd target/x86_64-unknown-linux-gnu/debug
+          tar -czf ../../../harper-ls.tar.gz harper-ls
+          cd -
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-build
+          path: harper-ls.tar.gz
